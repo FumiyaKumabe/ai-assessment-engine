@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI多角査定エンジン v5.1 (Standalone)</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/recharts@2.10.0/umd/Recharts.js"></script>
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            background-color: #f8fafc;
+            color: #0f172a;
+            font-family: 'Inter', 'Noto Sans JP', sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+        /* カスタムスクロールバー */
+        .custom-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        .custom-scroll::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        /* ガラス効果と背景 */
+        .glass {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+        }
+        .bg-grid {
+            background-size: 40px 40px;
+            background-image: 
+                linear-gradient(to right, #f1f5f9 1px, transparent 1px),
+                linear-gradient(to bottom, #f1f5f9 1px, transparent 1px);
+        }
+        
+        /* アニメーション */
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pulseSlow { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+        
+        .animate-slide-in { animation: slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        .animate-fade-in { animation: fadeIn 0.3s ease-out; }
+        .animate-pulse-slow { animation: pulseSlow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        
+        /* インタラクション */
+        tr.group:hover td { background-color: rgba(239, 246, 255, 0.4); }
+    </style>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'Noto Sans JP', 'sans-serif'] },
+                    colors: { slate: { 850: '#1e293b' } }
+                }
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="root">
+        <div id="loading-message" style="padding: 40px; text-align: center; color: #64748b; font-family: sans-serif;">
+            <div style="margin-bottom: 20px;">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin: auto; animation: spin 1s linear infinite;">
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
+                </svg>
+                <style>@keyframes spin { 100% { transform: rotate(360deg); } }</style>
+            </div>
+            <h3 style="font-size: 1.2rem; font-weight: bold; margin-bottom: 10px;">システム起動中...</h3>
+            <p style="font-size: 0.9rem;">画面が切り替わらない場合、以下の可能性があります：</p>
+            <ul style="display: inline-block; text-align: left; font-size: 0.9rem; margin-top: 10px; color: #ef4444;">
+                <li>⚠️ 社内ネットワークで外部サイト(unpkg.com)がブロックされている</li>
+                <li>⚠️ インターネットに接続されていない</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // 3秒経ってもReactが起動しない場合、エラーメッセージを強調表示
+        setTimeout(function() {
+            const root = document.getElementById('root');
+            // Reactがマウントされると中身が書き換わるため、loading-messageが残っていたらエラーとみなす
+            if (document.getElementById('loading-message')) {
+                document.getElementById('loading-message').innerHTML += `
+                    <div style="margin-top:20px; padding:15px; background:#fee2e2; border-radius:8px; color:#991b1b;">
+                        <strong>起動エラー:</strong><br>
+                        ライブラリの読み込みに失敗しました。<br>
+                        F12キーを押して「Console」タブの赤字エラーをご確認ください。
+                    </div>
+                `;
+            }
+        }, 3000);
+    </script>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect } = React;
+        
+        // ライブラリ読み込み失敗時のフォールバック
+        const RechartsLib = window.Recharts || {};
+        const { ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, Cell } = RechartsLib;
+
+        // --- Mock Data ---
+        const MOCK_GUARDS = [
+            { id: 1, name: "佐藤 健一", age: 45, rank: "警備士長", avatar: "bg-blue-100 text-blue-600", riskLevel: "high", riskScore: 85, metrics: { attendance: 98, profit: 92, stress: 90, sentiment: 40, engagement: 45 }, tags: ["通勤負荷", "相場乖離", "金銭不満"], financial: { currentWage: 1100, marketWage: 1250, unitPrice: 2400, allowance: 15000, marginLimit: 15 }, placement: { current: "交通誘導 (遠方)", ideal: "施設警備 (近隣)", commuteTime: 95, idealCommuteTime: 30, coords: { home: [20, 50], current: [80, 80], ideal: [40, 40] } }, skills: { level: 3, tree: [{ id: 'base', name: '新任研修', done: true }, { id: 'traffic2', name: '交通2級', done: true }, { id: 'traffic1', name: '交通1級', done: false, target: false }, { id: 'instructor', name: '指導教', done: false, target: true }] }, aiAction: { type: "placement", label: "配置転換", detail: "自宅30分圏内へ", urgent: true } },
+            { id: 2, name: "田中 優子", age: 28, rank: "警備員", avatar: "bg-pink-100 text-pink-600", riskLevel: "medium", riskScore: 55, metrics: { attendance: 92, profit: 60, stress: 40, sentiment: 75, engagement: 68 }, tags: ["成長意欲", "キャリア迷走"], financial: { currentWage: 1050, marketWage: 1100, unitPrice: 2000, allowance: 5000, marginLimit: 10 }, placement: { current: "イベント警備", ideal: "イベント警備", commuteTime: 45, idealCommuteTime: 45, coords: { home: [50, 20], current: [60, 30], ideal: [60, 30] } }, skills: { level: 1, tree: [{ id: 'base', name: '新任研修', done: true }, { id: 'crowd2', name: '雑踏2級', done: false, target: true }, { id: 'facility2', name: '施設2級', done: false, target: false }] }, aiAction: { type: "skill", label: "資格支援", detail: "雑踏2級取得推奨", urgent: false } },
+            { id: 3, name: "高橋 誠", age: 35, rank: "警備副士長", avatar: "bg-amber-100 text-amber-600", riskLevel: "high", riskScore: 78, metrics: { attendance: 88, profit: 78, stress: 70, sentiment: 55, engagement: 50 }, tags: ["人間関係", "現場クレーム"], financial: { currentWage: 1150, marketWage: 1200, unitPrice: 2200, allowance: 10000, marginLimit: 12 }, placement: { current: "施設警備", ideal: "交通誘導", commuteTime: 50, idealCommuteTime: 50, coords: { home: [10, 10], current: [30, 90], ideal: [80, 20] } }, skills: { level: 2, tree: [{ id: 'base', name: '新任研修', done: true }, { id: 'facility2', name: '施設2級', done: true }, { id: 'traffic2', name: '交通2級', done: false, target: true }] }, aiAction: { type: "interview", label: "緊急面談", detail: "配置不満のヒアリング", urgent: true } },
+            { id: 4, name: "鈴木 一郎", age: 62, rank: "指導教育責任者", avatar: "bg-emerald-100 text-emerald-600", riskLevel: "low", riskScore: 15, metrics: { attendance: 100, profit: 85, stress: 30, sentiment: 90, engagement: 88 }, tags: ["ロールモデル", "安定"], financial: { currentWage: 1500, marketWage: 1450, unitPrice: 3500, allowance: 30000, marginLimit: 20 }, placement: { current: "本社", ideal: "本社", commuteTime: 20, idealCommuteTime: 20, coords: { home: [50, 50], current: [55, 55], ideal: [55, 55] } }, skills: { level: 5, tree: [{ id: 'base', name: '新任研修', done: true }, { id: 'facility1', name: '施設1級', done: true }, { id: 'instructor', name: '指導教', done: true, target: false }] }, aiAction: { type: "bonus", label: "特別賞与", detail: "指導感謝金", urgent: false } }
+        ];
+
+        // --- Icons ---
+        const Icon = ({ name, size = 18, className = "", strokeWidth = 2 }) => {
+            const icons = {
+                Users: <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>,
+                Activity: <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>,
+                MapPin: <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>,
+                DollarSign: <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>,
+                Briefcase: <rect width="20" height="14" x="2" y="7" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>,
+                BookOpen: <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>,
+                AlertTriangle: <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>,
+                CheckCircle: <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>,
+                X: <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>,
+                ChevronRight: <polyline points="9 18 15 12 9 6"/>,
+                Search: <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>,
+                Filter: <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>,
+                TrendingUp: <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>,
+                TrendingDown: <polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/>,
+                Home: <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>,
+                Award: <circle cx="12" cy="8" r="7"/><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"/>,
+                Zap: <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>,
+                Send: <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>,
+                Sparkles: <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L12 3Z"/>,
+                FileText: <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+            };
+            return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className}><g>{icons[name] || <circle cx="12" cy="12" r="10"/>}</g></svg>;
+        };
+
+        // --- Helpers ---
+        const Badge = ({ children, type = 'neutral' }) => {
+            const styles = { neutral: "bg-slate-100 text-slate-600 border-slate-200", red: "bg-red-50 text-red-700 border-red-200", amber: "bg-amber-50 text-amber-700 border-amber-200", green: "bg-emerald-50 text-emerald-700 border-emerald-200", blue: "bg-blue-50 text-blue-700 border-blue-200" };
+            return <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${styles[type]}`}>{children}</span>;
+        };
+
+        const TooltipCard = ({ title, value, sub, trend }) => (
+            <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow duration-300">
+                <div className="flex justify-between items-start mb-2"><span className="text-xs font-semibold text-slate-400">{title}</span>{trend !== undefined && (<span className={`flex items-center text-[10px] font-bold ${trend > 0 ? 'text-emerald-600' : trend < 0 ? 'text-red-500' : 'text-slate-400'}`}>{trend > 0 ? '+' : ''}{trend}%<Icon name={trend > 0 ? "TrendingUp" : "TrendingDown"} size={12} className="ml-0.5"/></span>)}</div>
+                <div className="text-2xl font-bold text-slate-800 tracking-tight">{value}</div>{sub && <div className="text-[10px] text-slate-400 mt-1">{sub}</div>}
+            </div>
+        );
+
+        // --- Components ---
+        const InteractiveWageSimulator = ({ guard }) => {
+            const [adjustment, setAdjustment] = useState(0);
+            const baseWage = guard.financial.currentWage;
+            const newWage = baseWage + adjustment;
+            const allowance = Math.round(guard.financial.allowance / 160);
+            const totalCost = Math.round((newWage + allowance) * 1.16 + 200);
+            const profit = guard.financial.unitPrice - totalCost;
+            const margin = ((profit / guard.financial.unitPrice) * 100).toFixed(1);
+            
+            // Rechartsが利用できない場合のフォールバック
+            if (!BarChart) return <div className="h-48 flex items-center justify-center bg-slate-50 text-slate-400 text-sm">グラフ描画ライブラリを読み込めませんでした</div>;
+
+            const simData = useMemo(() => {
+                const data = [];
+                for(let i = -100; i <= 300; i+=50) {
+                    const w = baseWage + i;
+                    const c = Math.round((w + allowance) * 1.16 + 200);
+                    data.push({ x: i, wage: w, profit: guard.financial.unitPrice - c });
+                }
+                return data;
+            }, [baseWage, allowance, guard.financial.unitPrice]);
+
+            return (
+                <div className="space-y-6">
+                    <div className="bg-slate-50 p-5 rounded-xl border border-slate-200">
+                        <div className="flex justify-between items-end mb-4">
+                            <div><label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 block">時給調整シミュレーター</label><div className="flex items-baseline gap-2"><span className="text-3xl font-bold text-slate-800 tabular-nums">¥{newWage.toLocaleString()}</span><span className={`text-sm font-bold ${adjustment > 0 ? 'text-emerald-600' : adjustment < 0 ? 'text-red-600' : 'text-slate-400'}`}>({adjustment > 0 ? '+' : ''}{adjustment})</span></div></div>
+                            <div className="text-right"><div className="text-xs text-slate-500 mb-1">想定利益率</div><div className={`text-2xl font-bold tabular-nums ${margin < guard.financial.marginLimit ? 'text-red-500' : 'text-emerald-600'}`}>{margin}%</div>{margin < guard.financial.marginLimit && <div className="text-[10px] text-red-500 font-bold">警告: 目標利益率 {guard.financial.marginLimit}% 未達</div>}</div>
+                        </div>
+                        <input type="range" min="-100" max="300" step="10" value={adjustment} onChange={(e) => setAdjustment(Number(e.target.value))} className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"/>
+                        <div className="flex justify-between text-[10px] text-slate-400 mt-2 font-mono"><span>-¥100</span><span>現在: ¥{baseWage}</span><span>+¥300</span></div>
+                    </div>
+                    <div className="h-48 w-full bg-white rounded-xl border border-slate-200 p-4 relative">
+                        <div className="absolute top-4 left-4 z-10 text-xs font-bold text-slate-400">利益 vs 時給感度分析</div>
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={simData} margin={{top: 20, right: 0, left: -20, bottom: 0}}>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                <XAxis dataKey="wage" tick={{fontSize: 10}} tickFormatter={(val) => `¥${val}`} />
+                                <YAxis tick={{fontSize: 10}} tickFormatter={(val) => `¥${val}`} />
+                                <Tooltip cursor={{fill: '#f8fafc'}} content={({active, payload}) => active && payload && payload.length ? <div className="bg-slate-800 text-white text-xs p-2 rounded shadow-xl"><div className="font-bold mb-1">時給: ¥{payload[0].payload.wage}</div><div>利益: ¥{payload[0].payload.profit}/h</div></div> : null} />
+                                <ReferenceLine y={0} stroke="#cbd5e1" />
+                                <Bar dataKey="profit" radius={[4, 4, 0, 0]}>{simData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.wage === newWage ? '#3b82f6' : entry.profit < 0 ? '#ef4444' : '#cbd5e1'} />)}</Bar>
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </div>
+                </div>
+            );
+        };
+
+        const AdvancedMap = ({ guard }) => (
+            <div className="flex gap-6 h-full">
+                <div className="flex-1 bg-slate-50 rounded-xl border border-slate-200 relative overflow-hidden bg-grid group">
+                    <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                        <line x1={`${guard.placement.coords.home[0]}%`} y1={`${guard.placement.coords.home[1]}%`} x2={`${guard.placement.coords.current[0]}%`} y2={`${guard.placement.coords.current[1]}%`} stroke="#94a3b8" strokeWidth="2" strokeDasharray="4 4" />
+                        <line x1={`${guard.placement.coords.home[0]}%`} y1={`${guard.placement.coords.home[1]}%`} x2={`${guard.placement.coords.ideal[0]}%`} y2={`${guard.placement.coords.ideal[1]}%`} stroke="#10b981" strokeWidth="2"/>
+                    </svg>
+                    <div className="absolute transform -translate-x-1/2 -translate-y-1/2 flex flex-col items-center" style={{left: `${guard.placement.coords.home[0]}%`, top: `${guard.placement.coords.home[1]}%`}}><div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-lg border-2 border-white z-10"><Icon name="Home" size={14} /></div><span className="bg-white/90 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold shadow mt-1">自宅</span></div>
+                    <div className="absolute transform -translate-x-1/2 -translate-y-1/2 flex flex-col items-center opacity-60 grayscale" style={{left: `${guard.placement.coords.current[0]}%`, top: `${guard.placement.coords.current[1]}%`}}><div className="w-8 h-8 bg-slate-500 rounded-full flex items-center justify-center text-white shadow-lg border-2 border-white z-10"><Icon name="Briefcase" size={14} /></div><span className="bg-white/90 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold shadow mt-1">現在地</span></div>
+                    <div className="absolute transform -translate-x-1/2 -translate-y-1/2 flex flex-col items-center animate-pulse-slow" style={{left: `${guard.placement.coords.ideal[0]}%`, top: `${guard.placement.coords.ideal[1]}%`}}><div className="w-10 h-10 bg-emerald-500 rounded-full flex items-center justify-center text-white shadow-xl border-4 border-emerald-100 z-20"><Icon name="CheckCircle" size={20} /></div><span className="bg-white/90 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold shadow mt-1 text-emerald-700">推奨地</span></div>
+                </div>
+                <div className="w-48 flex flex-col justify-center space-y-6">
+                    <div><div className="text-xs text-slate-400 mb-1">現在の通勤時間</div><div className="h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-slate-400" style={{width: '100%'}}></div></div><div className="text-right text-lg font-bold text-slate-500">{guard.placement.commuteTime}分</div></div>
+                    <div><div className="text-xs text-emerald-600 font-bold mb-1 flex items-center gap-1"><Icon name="Sparkles" size={10} /> 改善後の通勤時間</div><div className="h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-emerald-500" style={{width: `${(guard.placement.idealCommuteTime / guard.placement.commuteTime) * 100}%`}}></div></div><div className="text-right text-2xl font-bold text-emerald-600">{guard.placement.idealCommuteTime}分</div><div className="text-right text-[10px] text-emerald-600 font-bold">年間 約{Math.round((guard.placement.commuteTime - guard.placement.idealCommuteTime) * 2 * 20 * 12 / 60)}時間の余暇創出</div></div>
+                </div>
+            </div>
+        );
+
+        const SkillTree = ({ skills }) => (
+            <div className="relative py-8">
+                <div className="absolute top-1/2 left-0 right-0 h-1 bg-slate-100 -translate-y-1/2 z-0"></div>
+                <div className="flex justify-between items-center relative z-10 px-4">
+                    {skills.tree.map((node, index) => {
+                        const isDone = node.done;
+                        const isTarget = node.target;
+                        const statusColor = isDone ? 'bg-blue-600 border-blue-600 text-white' : isTarget ? 'bg-white border-emerald-500 text-emerald-600' : 'bg-slate-100 border-slate-200 text-slate-400';
+                        return (
+                            <div key={node.id} className="flex flex-col items-center gap-3 group cursor-pointer">
+                                <div className={`w-12 h-12 rounded-full border-2 flex items-center justify-center transition-all duration-300 ${statusColor} ${isTarget ? 'shadow-lg shadow-emerald-100 scale-110 ring-4 ring-emerald-50' : ''}`}>{isDone ? <Icon name="CheckCircle" size={20} /> : isTarget ? <Icon name="Zap" size={20} /> : <span className="font-bold text-sm">{index + 1}</span>}</div>
+                                <div className="text-center"><div className={`text-xs font-bold ${isDone ? 'text-blue-700' : isTarget ? 'text-emerald-700' : 'text-slate-400'}`}>{node.name}</div>{isTarget && <div className="text-[10px] text-emerald-500 font-bold mt-0.5 animate-pulse">Next Goal</div>}</div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        );
+
+        const AIChatGenerator = ({ action }) => {
+            const [text, setText] = useState("");
+            const fullText = `件名: 今後のキャリアと配置に関するご相談\n\nお疲れ様です。\n日頃の業務、誠にありがとうございます。\n\nさて、直近の勤務状況と今後のキャリアパスについて、一度ゆっくりお話しする機会を設けたく存じます。\n\n特に「${action.detail}」の可能性について検討しており、${action.urgent ? '早急に' : ''}ご意見を伺えれば幸いです。\n\nご都合の良い候補日をお知らせください。`;
+            const [isGenerating, setIsGenerating] = useState(false);
+            const startGeneration = () => { if(isGenerating || text.length > 0) return; setIsGenerating(true); let i = 0; const timer = setInterval(() => { setText(fullText.substring(0, i)); i++; if(i > fullText.length) { clearInterval(timer); setIsGenerating(false); } }, 30); };
+            return (
+                <div className="bg-slate-50 rounded-lg border border-slate-200 p-4 mt-2">
+                    <div className="flex justify-between items-center mb-3"><div className="flex items-center gap-2"><div className="w-6 h-6 rounded bg-gradient-to-tr from-purple-500 to-indigo-600 flex items-center justify-center text-white"><Icon name="Sparkles" size={14} /></div><span className="text-xs font-bold text-slate-700">AI通知ドラフト</span></div><button onClick={startGeneration} disabled={isGenerating || text.length > 0} className="text-xs text-blue-600 font-bold hover:underline disabled:opacity-50">{text.length > 0 ? '再生成' : '下書きを生成'}</button></div>
+                    <div className="min-h-[120px] text-sm text-slate-600 whitespace-pre-wrap font-mono bg-white p-3 rounded border border-slate-100 shadow-inner">{text}{isGenerating && <span className="inline-block w-2 h-4 bg-blue-500 ml-1 animate-pulse"></span>}{!text && !isGenerating && <span className="text-slate-300">ボタンを押してAIドラフトを生成...</span>}</div>
+                    {text.length === fullText.length && (<div className="mt-3 flex justify-end gap-2 animate-fade-in"><button className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-600 hover:bg-slate-50"><Icon name="FileText" size={12} /> コピー</button><button className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-bold hover:bg-blue-700"><Icon name="Send" size={12} /> メール送信</button></div>)}
+                </div>
+            );
+        };
+
+        const DetailDrawer = ({ guard, onClose }) => {
+            const [activeTab, setActiveTab] = useState("financial");
+            useEffect(() => { if (guard.aiAction.type === 'placement') setActiveTab('environment'); else if (guard.aiAction.type === 'skill') setActiveTab('growth'); else setActiveTab('financial'); }, [guard]);
+
+            return (
+                <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/20 backdrop-blur-sm transition-opacity" onClick={onClose}>
+                    <div className="w-full max-w-5xl bg-white h-full shadow-2xl animate-slide-in flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="bg-white border-b border-slate-200 p-6 shrink-0 flex justify-between items-start z-20 shadow-sm relative">
+                            <div className="flex items-center gap-6"><div className="relative"><div className={`w-20 h-20 rounded-2xl flex items-center justify-center text-3xl font-bold ${guard.avatar} shadow-inner`}>{guard.name[0]}</div><div className={`absolute -bottom-2 -right-2 px-2 py-0.5 rounded text-[10px] font-bold text-white shadow border-2 border-white ${guard.riskLevel === 'high' ? 'bg-red-500' : guard.riskLevel === 'medium' ? 'bg-amber-500' : 'bg-emerald-500'}`}>Risk: {guard.riskLevel.toUpperCase()}</div></div><div><div className="flex items-center gap-3 mb-1"><h2 className="text-2xl font-bold text-slate-800">{guard.name}</h2><Badge>{guard.rank}</Badge></div><div className="flex gap-4 text-sm text-slate-500 mb-2"><div className="flex items-center gap-1.5"><Icon name="Briefcase" size={14} className="text-slate-400" /> 勤続 3年2ヶ月</div><div className="flex items-center gap-1.5"><Icon name="Activity" size={14} className="text-slate-400" /> {guard.age}歳</div></div><div className="flex gap-2">{guard.tags.map(t => <span key={t} className="text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">#{t}</span>)}</div></div></div>
+                            <div className="flex items-start gap-4"><div className="text-right"><div className="text-[10px] uppercase text-slate-400 font-bold tracking-wider mb-1">Engagement Score</div><div className="flex items-end justify-end gap-2"><span className={`text-3xl font-bold leading-none ${guard.metrics.engagement < 50 ? 'text-red-500' : 'text-emerald-500'}`}>{guard.metrics.engagement}</span><span className="text-sm text-slate-400 font-medium mb-1">/100</span></div></div><button onClick={onClose} className="p-2 bg-slate-50 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition"><Icon name="X" size={24} /></button></div>
+                        </div>
+                        <div className="flex px-6 bg-white border-b border-slate-200 shrink-0 sticky top-0 z-10">{[{ id: 'financial', label: '財務・処遇シミュレーション', icon: 'DollarSign' }, { id: 'environment', label: '配置・通勤環境', icon: 'MapPin' }, { id: 'growth', label: 'スキル・キャリアパス', icon: 'TrendingUp' }].map(tab => (<button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-2 px-6 py-4 text-sm font-bold border-b-2 transition-all relative top-[1px] ${activeTab === tab.id ? 'border-blue-600 text-blue-600 bg-blue-50/30' : 'border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50'}`}><Icon name={tab.icon} size={16} />{tab.label}</button>))}</div>
+                        <div className="flex-1 overflow-y-auto bg-slate-50/50 p-8 custom-scroll">
+                            <div className="flex gap-8">
+                                <div className="w-80 space-y-6 shrink-0">
+                                    <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm"><h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center justify-between">4軸分析スコア<Icon name="Activity" size={14} /></h4><div className="h-48 relative -ml-4"><ResponsiveContainer width="100%" height="100%">{RadarChart ? <RadarChart cx="50%" cy="50%" outerRadius="70%" data={[{ subject: '勤怠', A: guard.metrics.attendance, fullMark: 100 }, { subject: '収益', A: guard.metrics.profit, fullMark: 100 }, { subject: '低ストレス', A: 100 - guard.metrics.stress, fullMark: 100 }, { subject: '感情', A: guard.metrics.sentiment, fullMark: 100 }, { subject: '熱意', A: guard.metrics.engagement, fullMark: 100 }]}><PolarGrid stroke="#e2e8f0" /><PolarAngleAxis dataKey="subject" tick={{ fontSize: 10, fill: '#64748b', fontWeight: 600 }} /><PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} /><Radar name="本人" dataKey="A" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.2} /></RadarChart> : <div className="flex items-center justify-center h-full text-xs text-slate-400">グラフエラー</div>}</ResponsiveContainer></div></div>
+                                    <div className="bg-gradient-to-br from-indigo-50 to-blue-50 p-5 rounded-xl border border-blue-100 shadow-sm"><h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider mb-3 flex items-center gap-2"><Icon name="Zap" size={14} /> AI Analysis</h4><p className="text-sm text-slate-700 leading-relaxed font-medium">{guard.tags.includes("通勤負荷") ? "通勤時間の長さと給与水準のアンマッチが離職リスクの主因です。特に近隣エリアの求人相場と比較して劣後しています。" : "スキル習熟に対して評価が追いついていないと感じている可能性があります。新たな役割付与が効果的です。"}</p></div>
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    {activeTab === 'financial' && (<div className="space-y-6 animate-fade-in"><div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm"><div className="flex justify-between items-center mb-6"><h3 className="text-lg font-bold text-slate-800">処遇改善シミュレーター</h3><Badge type="blue">現在の利益率: {((guard.financial.unitPrice - (guard.financial.currentWage * 1.16 + 200 + guard.financial.allowance/160)) / guard.financial.unitPrice * 100).toFixed(1)}%</Badge></div><InteractiveWageSimulator guard={guard} /></div><div className="grid grid-cols-2 gap-4"><div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm"><div className="text-xs text-slate-400 mb-1">現在の時給</div><div className="text-2xl font-bold text-slate-700">¥{guard.financial.currentWage.toLocaleString()}</div><div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-slate-400" style={{width: '70%'}}></div></div></div><div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm relative overflow-hidden"><div className="absolute right-0 top-0 p-2 opacity-10"><Icon name="TrendingUp" size={40} /></div><div className="text-xs text-slate-400 mb-1">市場相場 (同エリア・同ランク)</div><div className="text-2xl font-bold text-blue-600">¥{guard.financial.marketWage.toLocaleString()}</div><div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-blue-500" style={{width: '85%'}}></div></div><div className="text-[10px] text-blue-600 font-bold mt-1 text-right">差額 -¥{guard.financial.marketWage - guard.financial.currentWage}</div></div></div></div>)}
+                                    {activeTab === 'environment' && (<div className="space-y-6 animate-fade-in"><div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm h-96 flex flex-col"><h3 className="text-lg font-bold text-slate-800 mb-4">配置最適化ビジュアライザー</h3><AdvancedMap guard={guard} /></div><div className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex gap-4"><div className="text-amber-600 shrink-0 mt-1"><Icon name="AlertTriangle" /></div><div><h4 className="text-sm font-bold text-amber-800">長時間通勤のアラート</h4><p className="text-xs text-amber-700 mt-1">現在の95分の通勤時間は、法的上限には触れませんが、社内規定の推奨ライン（60分）を大幅に超過しています。疲労蓄積による事故リスクが懸念されます。</p></div></div></div>)}
+                                    {activeTab === 'growth' && (<div className="space-y-6 animate-fade-in"><div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm"><h3 className="text-lg font-bold text-slate-800 mb-2">スキル・マイルストーン</h3><p className="text-sm text-slate-500 mb-6">次の昇格要件までの進捗状況</p><SkillTree skills={guard.skills} /></div><div className="grid grid-cols-2 gap-4"><div className="bg-white p-4 rounded-xl border border-slate-200"><div className="text-xs text-slate-400 font-bold mb-2">取得推奨資格</div><div className="flex items-center gap-3"><div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg"><Icon name="Award" /></div><div><div className="font-bold text-slate-800">交通誘導2級</div><div className="text-xs text-slate-500">手当目安: +¥5,000/月</div></div></div></div><div className="bg-white p-4 rounded-xl border border-slate-200"><div className="text-xs text-slate-400 font-bold mb-2">次期キャリアステップ</div><div className="flex items-center gap-3"><div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Icon name="Users" /></div><div><div className="font-bold text-slate-800">現場リーダー</div><div className="text-xs text-slate-500">期待役割: 新人教育・管制連携</div></div></div></div></div></div>)}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="p-5 bg-white border-t border-slate-200 shadow-xl z-20 shrink-0"><div className="flex gap-6 items-start"><div className="flex-1"><div className="flex items-center gap-2 mb-2"><Icon name="Zap" size={16} className="text-purple-500" /><span className="text-sm font-bold text-slate-800">AI推奨アクション: {guard.aiAction.label}</span></div><AIChatGenerator action={guard.aiAction} /></div><div className="w-px bg-slate-200 self-stretch mx-2"></div><div className="flex flex-col gap-3 justify-center w-48"><button className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm font-bold shadow-lg shadow-slate-200 transition-all flex items-center justify-center gap-2"><Icon name="CheckCircle" size={16} /> 方針を確定する</button><button className="w-full py-2 bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 rounded-lg text-xs font-bold transition-all">保留 / 上長確認</button></div></div></div>
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [selectedGuard, setSelectedGuard] = useState(null);
+            const [filter, setFilter] = useState('all');
+            const [searchTerm, setSearchTerm] = useState("");
+            const filteredGuards = useMemo(() => MOCK_GUARDS.filter(g => (filter === 'all' || g.riskLevel === filter) && (g.name.includes(searchTerm) || g.tags.some(t => t.includes(searchTerm)))), [filter, searchTerm]);
+
+            return (
+                <div className="min-h-screen flex flex-col font-sans text-slate-900">
+                    <header className="glass sticky top-0 z-30 h-16 flex items-center px-8 justify-between shadow-sm">
+                        <div className="flex items-center gap-3"><div className="bg-slate-900 p-2 rounded-lg text-white shadow-lg shadow-slate-200"><Icon name="Activity" size={20} /></div><h1 className="font-bold text-slate-800 text-lg tracking-tight">AI Assessment Engine <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500 ml-2">PRO</span></h1></div>
+                        <div className="flex items-center gap-6"><nav className="flex gap-6 text-sm font-medium text-slate-500"><a href="#" className="text-slate-900">ダッシュボード</a><a href="#" className="hover:text-slate-900 transition">従業員一覧</a><a href="#" className="hover:text-slate-900 transition">分析レポート</a></nav><div className="w-px h-4 bg-slate-300"></div><div className="flex items-center gap-3 pl-2"><div className="w-8 h-8 rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 text-white flex items-center justify-center text-xs font-bold shadow ring-2 ring-white">YM</div></div></div>
+                    </header>
+                    <main className="flex-1 p-8 max-w-[1600px] mx-auto w-full space-y-8">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-6"><TooltipCard title="要対応アラート" value="3名" sub="高リスク群" trend={-5} /><TooltipCard title="昇給推奨対象" value="12名" sub="今月の査定" trend={12} /><TooltipCard title="平均エンゲージメント" value="68.4" sub="全社平均" trend={2.1} /><TooltipCard title="配置最適化余地" value="8件" sub="通勤30分短縮可" trend={0} /></div>
+                        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+                            <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-white">
+                                <div className="flex items-center gap-4"><div className="relative group"><Icon name="Search" className="absolute left-3 top-2.5 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={16} /><input type="text" placeholder="警備員を検索..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-10 pr-4 py-2 border border-slate-200 bg-slate-50 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white w-64 transition-all" /></div><div className="flex bg-slate-100 p-1 rounded-lg"><button onClick={() => setFilter('all')} className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${filter === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>全て</button><button onClick={() => setFilter('high')} className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 ${filter === 'high' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><span className="w-2 h-2 rounded-full bg-red-500"></span> High Risk</button></div></div>
+                                <div className="flex gap-2"><button className="flex items-center gap-2 px-3 py-2 border border-slate-200 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50"><Icon name="Filter" size={14} /> 絞り込み</button><button className="flex items-center gap-2 px-3 py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 shadow-lg shadow-slate-200"><Icon name="Send" size={14} /> 一括アクション</button></div>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left border-collapse">
+                                    <thead className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 uppercase font-semibold"><tr><th className="p-5 pl-6 w-64">氏名 / ランク</th><th className="p-5 w-48">リスクスコア</th><th className="p-5">主要指標 (収益/ストレス/熱意)</th><th className="p-5">AI推奨アクション</th><th className="p-5 text-center w-20"></th></tr></thead>
+                                    <tbody className="divide-y divide-slate-100 text-sm">
+                                        {filteredGuards.map((guard) => (
+                                            <tr key={guard.id} onClick={() => setSelectedGuard(guard)} className="hover:bg-blue-50/30 transition-colors cursor-pointer group relative">
+                                                <td className="p-5 pl-6"><div className="flex items-center gap-4"><div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shadow-sm ring-2 ring-white ${guard.avatar}`}>{guard.name[0]}</div><div><div className="font-bold text-slate-800">{guard.name}</div><div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1">{guard.rank}<span className="w-1 h-1 rounded-full bg-slate-300"></span>{guard.age}歳</div></div></div></td>
+                                                <td className="p-5"><div className="flex flex-col gap-2"><div className="flex items-center gap-2"><div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden"><div className={`h-full rounded-full ${guard.riskLevel === 'high' ? 'bg-red-500' : guard.riskLevel === 'medium' ? 'bg-amber-400' : 'bg-emerald-400'}`} style={{width: `${guard.riskScore}%`}}></div></div><span className="text-xs font-bold tabular-nums text-slate-600">{guard.riskScore}</span></div><div className="flex gap-1 flex-wrap">{guard.tags.slice(0, 2).map((t, i) => <span key={i} className="text-[10px] text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">{t}</span>)}</div></div></td>
+                                                <td className="p-5"><div className="flex gap-6"><div className="text-center"><div className="text-[10px] text-slate-400 mb-1">収益性</div><div className={`font-bold tabular-nums ${guard.metrics.profit < 50 ? 'text-red-500' : 'text-slate-700'}`}>{guard.metrics.profit}</div></div><div className="w-px bg-slate-100 h-8"></div><div className="text-center"><div className="text-[10px] text-slate-400 mb-1">ストレス</div><div className={`font-bold tabular-nums ${guard.metrics.stress > 70 ? 'text-red-500' : 'text-slate-700'}`}>{guard.metrics.stress}</div></div><div className="w-px bg-slate-100 h-8"></div><div className="text-center"><div className="text-[10px] text-slate-400 mb-1">熱意</div><div className={`font-bold tabular-nums ${guard.metrics.engagement < 50 ? 'text-amber-500' : 'text-emerald-500'}`}>{guard.metrics.engagement}</div></div></div></td>
+                                                <td className="p-5"><div className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-bold transition-transform group-hover:scale-105 origin-left ${guard.aiAction.urgent ? 'bg-red-50 border-red-100 text-red-700' : 'bg-white border-slate-200 text-slate-600 shadow-sm'}`}><Icon name={guard.aiAction.type === 'placement' ? 'MapPin' : guard.aiAction.type === 'skill' ? 'BookOpen' : 'DollarSign'} size={14} />{guard.aiAction.label}<span className="font-normal opacity-70 border-l border-current pl-2 ml-1">{guard.aiAction.detail}</span></div></td>
+                                                <td className="p-5 text-center"><button className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"><Icon name="ChevronRight" size={18} /></button></td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </main>
+                    {selectedGuard && <DetailDrawer guard={selectedGuard} onClose={() => setSelectedGuard(null)} />}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
